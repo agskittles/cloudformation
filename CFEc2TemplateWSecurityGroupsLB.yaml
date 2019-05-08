@@ -1,0 +1,105 @@
+Parameters: #what it will ask for when you are creating the stack
+  myKeyPair: 
+    Description: Amazon EC2 Key Pair #for logging into the instance
+    Type: AWS::EC2::KeyPair::KeyName
+  VpcId:
+    Description: Enter the VpcId #To connect to an existing Vpc
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Description: Enter the Subnets #What subnets to connect the Ec2 instances to
+    Type: List<AWS::EC2::Subnet::Id>
+Resources:
+  LoadBalancer: #Application load balancer
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: !Ref SubnetIds
+  LoadBalancerListener: # Port 80 Listener for ALB
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions: #Forwards traffic to target group
+        - Type: forward 
+          TargetGroupArn:
+            Ref: TargetGroup
+  TargetGroup: #Associated to an autoscaling group
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones: !GetAZs #Within these availability zones
+      LaunchConfigurationName: !Ref LaunchConfiguration #Using this launch configuration
+      MinSize: 1 #Minumum instances for autoscaling
+      MaxSize: 2 #Maximum instances for autoscaling
+      TargetGroupARNs:
+        - !Ref TargetGroup #Associated with the TargetGroup
+  LaunchConfiguration: #Defines all parameters to start up an EC2 Instance
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata: #Used to install php and httpd as well as to print a comment to a webpage to confirm success
+      Comment: Install php and httpd
+      AWS::CloudFormation::Init:
+        config: 
+          packages: 
+            yum:
+              httpd: []
+              php: []
+          files: 
+            /var/www/html/index.php:
+              content: !Sub | #What will show up on the webpage.
+                <?php print "Success!"; ?>
+          services: 
+            sysvinit:
+              httpd:
+                enabled: true
+                ensureRunning: true #Makes sure httpd is running
+    Properties: #Properties of ec2 instances for launch configuration
+      KeyName: !Ref myKeyPair
+      InstanceType: t2.micro
+      SecurityGroups:
+        - !Ref EC2SecurityGroup
+      ImageId: ami-0080e4c5bc078760e #ami for t2.micro in us-east
+      UserData: #Bootstrap to run when the instances start
+        'Fn::Base64': #Installs latest AWS CFN bootstrap and installs files/packages from metadata
+          !Sub |
+            #!/bin/bash -xe                        
+            yum install -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource LaunchConfiguration --region ${AWS::Region}
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB Security Group
+      VpcId: !Ref VpcId #Security group is within a Vpc Id
+      SecurityGroupIngress: #Single ingress rule allowing anybody to come in via port 80 only
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 Instance
+  EC2InboundRule: # EC2 can only accept traffic from ALB
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId:
+        !GetAtt #Gathers attributes from the ALBSecurityGroup to be allowed in/out
+        - ALBSecurityGroup
+        - GroupId
+      GroupId:
+        !GetAtt
+        - EC2SecurityGroup
+        - GroupId
+Outputs:
+  PublicDns: #Public DNS name of the Load Balancer which is what you have to connect to in order to access the instances
+    Description: The Public DNS
+    Value: !Sub 'http://${LoadBalancer.DNSName}'
